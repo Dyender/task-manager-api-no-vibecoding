@@ -15,31 +15,34 @@ type User struct {
 	ID       int    `json:"id"`
 	Login    string `json:"login"`
 	Password string `json:"password"`
+	Role     string `json:"role"`
 }
 
-func (db *Db) RegisterUser(ctx context.Context, user *User) error {
+func (db *Db) RegisterUserDB(ctx context.Context, user *User) error {
 	hash, err := cr.GenerateFromPassword([]byte(user.Password), cr.DefaultCost)
 	if err != nil {
 		return err
 	}
 	_, err = db.dbConnect.Query(
 		ctx,
-		`insert into users (login, password) values ($1, $2)`,
+		`insert into users (login, password, role) values ($1, $2, $3)`,
 		user.Login,
 		hash,
+		user.Role,
 	)
 	return err
 }
 
-func (db *Db) LoginUser(ctx context.Context, user *User) (string, error) {
+func (db *Db) LoginUserDB(ctx context.Context, user *User) (string, error) {
 	userID := 0
+	role := ""
 	hash := ""
 
 	err := db.dbConnect.QueryRow(
 		ctx,
-		`select id, password from users where login = $1`,
+		`select id, password, role from users where login = $1`,
 		user.Login,
-	).Scan(&userID, &hash)
+	).Scan(&userID, &hash, &role)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", errors.New("invalid login or password")
 	}
@@ -54,6 +57,7 @@ func (db *Db) LoginUser(ctx context.Context, user *User) (string, error) {
 
 	jwtClaims := jwt.MapClaims{
 		"user_id": userID,
+		"role":    role,
 		"exp":     time.Now().Add(time.Hour * 24 * 15).Unix(),
 	}
 
@@ -70,7 +74,7 @@ func (db *Db) LoginUser(ctx context.Context, user *User) (string, error) {
 
 }
 
-func (db *Db) UpdateUser(ctx context.Context, user *User) error {
+func (db *Db) UpdateUserDB(ctx context.Context, user *User) error {
 	hash, err := cr.GenerateFromPassword([]byte(user.Password), cr.DefaultCost)
 	if err != nil {
 		return err
@@ -86,12 +90,57 @@ func (db *Db) UpdateUser(ctx context.Context, user *User) error {
 	return err
 }
 
-func (db *Db) DeleteUserFromDb(ctx context.Context, id int) error {
+func (db *Db) DeleteUserDB(ctx context.Context, id int) error {
 	//добавить удаление всех тасков юзера по его айди
 	_, err := db.dbConnect.Query(
+		ctx,
+		`delete from tasks where userID = $1`,
+		id,
+	)
+	if err != nil {
+		return err
+	}
+	_, err = db.dbConnect.Query(
 		ctx,
 		`delete from users where id = $1`,
 		id,
 	)
 	return err
+}
+
+func (db *Db) GetAllUsersDB(ctx context.Context) ([]*User, error) {
+	users := []*User{}
+
+	rows, err := db.dbConnect.Query(
+		ctx,
+		`select * from users`,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	for rows.Next() {
+		user := &User{}
+		err = rows.Scan(&user.ID, &user.Login, &user.Password, &user.Role)
+		if err != nil {
+			return nil, err
+		}
+		users = append(users, user)
+
+	}
+	return users, nil
+}
+
+func (db *Db) GetUserByIdDB(ctx context.Context, id int) (*User, error) {
+	user := &User{}
+	err := db.dbConnect.QueryRow(
+		ctx,
+		`select * from users where id = $1`,
+		id,
+	).Scan(&user.ID, &user.Login, &user.Password, &user.Role)
+	if err != nil {
+		return nil, err
+	}
+	return user, nil
 }
