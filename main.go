@@ -62,16 +62,16 @@ func main() {
 	http.ListenAndServe(":8080", nil)
 }
 
-func AuthUser(w http.ResponseWriter, r *http.Request) (int, string, error) {
+func (db *Db) AuthUser(w http.ResponseWriter, r *http.Request) (int, string, error) {
 	authHeader := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authHeader, "Bearer ") {
 		return 0, "", errors.New("unauthorized error")
 	}
 	tokenString := authHeader[7:]
 
-	mySecretToken := os.Getenv("MY_SECRET_TOKEN")
+	mySecretToken := os.Getenv("JWT_TOKEN")
 	if mySecretToken == "" {
-		mySecretToken = "secret"
+		log.Fatal("JWT_TOKEN environment variable not set")
 	}
 
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
@@ -82,17 +82,52 @@ func AuthUser(w http.ResponseWriter, r *http.Request) (int, string, error) {
 	}
 	claims := token.Claims.(jwt.MapClaims)
 
+	tokenID, ok := claims["tokenID"].(string)
+	if !ok || tokenID == "" {
+		return 0, "", errors.New("invalid token id error")
+	}
+	isTokenLogout := false
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	err = db.dbConnect.QueryRow(
+		ctx,
+		`select exists(select 1 from logout_tokens where tokenId = $1)`,
+		tokenID,
+	).Scan(&isTokenLogout)
+	if err != nil {
+		return 0, "", err
+	}
+	if isTokenLogout {
+		return 0, "", errors.New("ty invalid - token logout")
+	}
+
 	userIdFloat := claims["user_id"].(float64)
 	userRole := claims["role"].(string)
 
 	userId := int(userIdFloat)
+
+	userExists := true
+
+	err = db.dbConnect.QueryRow(
+		ctx,
+		`select exists(select 1 from users where id = $1)`,
+		userId,
+		).Scan(&userExists)
+	if err != nil {
+		return 0, "", err
+	}
+	if !userExists {
+		return 0, "", errors.New("user not exists")
+	}
 
 	return userId, userRole, nil
 
 }
 
 func (db *Db) AddTask(w http.ResponseWriter, r *http.Request) {
-	userId, _, err := AuthUser(w, r)
+	userId, _, err := db.AuthUser(w, r)
 
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -150,7 +185,7 @@ func (db *Db) GetTaskByTaskId(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userId, _, err := AuthUser(w, r)
+	userId, _, err := db.AuthUser(w, r)
 
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -182,7 +217,7 @@ func (db *Db) GetTasksByUserId(w http.ResponseWriter, r *http.Request) {
 	ctx, cancer := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancer()
 
-	userId, _, err := AuthUser(w, r)
+	userId, _, err := db.AuthUser(w, r)
 
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -207,7 +242,7 @@ func (db *Db) GetTasksByUserId(w http.ResponseWriter, r *http.Request) {
 }
 
 func (db *Db) GetAllTasks(w http.ResponseWriter, r *http.Request) {
-	_, role, err := AuthUser(w, r)
+	_, role, err := db.AuthUser(w, r)
 
 	if err != nil {
 		fmt.Fprint(w, err)
@@ -235,7 +270,7 @@ func (db *Db) GetAllTasks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (db *Db) DeleteTask(w http.ResponseWriter, r *http.Request) {
-	userId, _, err := AuthUser(w, r)
+	userId, _, err := db.AuthUser(w, r)
 
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -269,7 +304,7 @@ func (db *Db) DeleteTask(w http.ResponseWriter, r *http.Request) {
 }
 
 func (db *Db) UpdateTask(w http.ResponseWriter, r *http.Request) {
-	userId, _, err := AuthUser(w, r)
+	userId, _, err := db.AuthUser(w, r)
 
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -321,13 +356,26 @@ func (db *Db) Register(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "body read error")
 		return
 	}
-	user := User{}
+	user := RegUser{}
 	err = json.Unmarshal(bodyBytes, &user)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		fmt.Fprint(w, "body parse error")
 		return
 	}
+
+	adminPass := os.Getenv("ADMIN_PASSWORD")
+
+	if user.Role == "admin" && user.Password != adminPass {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, "admin password is not correct")
+		return
+	}
+
+	if user.Role != "admin" && user.Role != "user" {
+		user.Role = "user"
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	err = db.RegisterUserDB(ctx, &user)
@@ -374,7 +422,7 @@ func (db *Db) Login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (db *Db) GetUserById(w http.ResponseWriter, r *http.Request) {
-	_, role, err := AuthUser(w, r)
+	_, role, err := db.AuthUser(w, r)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		fmt.Fprint(w, err)
@@ -410,7 +458,7 @@ func (db *Db) GetUserById(w http.ResponseWriter, r *http.Request) {
 }
 
 func (db *Db) GetAllUsers(w http.ResponseWriter, r *http.Request) {
-	_, role, err := AuthUser(w, r)
+	_, role, err := db.AuthUser(w, r)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		fmt.Fprint(w, err)
@@ -439,7 +487,7 @@ func (db *Db) GetAllUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (db *Db) DeleteUser(w http.ResponseWriter, r *http.Request) {
-	userId, _, err := AuthUser(w, r)
+	userId, _, err := db.AuthUser(w, r)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		fmt.Fprint(w, err)
@@ -460,7 +508,7 @@ func (db *Db) DeleteUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (db *Db) UpdateUserById(w http.ResponseWriter, r *http.Request) {
-	userId, _, err := AuthUser(w, r)
+	userId, _, err := db.AuthUser(w, r)
 
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"os"
 	"time"
 
@@ -11,7 +12,7 @@ import (
 func OpenDb() (*pgxpool.Pool, error) {
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
-		databaseURL = "postgres://postgres:postgres@localhost:5432/task_db"
+		log.Fatal("DATABASE_URL env variable not set")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

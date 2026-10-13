@@ -145,7 +145,7 @@ func (db *Db) UpdateTaskByIdDB(ctx context.Context, task TaskUpdate, id, userId 
 		return err
 	}
 
-	_, err = db.dbConnect.Query(
+	_, err = db.dbConnect.Exec(
 		ctx,
 		querySql,
 		args...,
